@@ -5,7 +5,8 @@
 - Crafty Controller 4 — веб-панель Minecraft;
 - tModLoader 1.4 (Terraria) сервер;
 - FileBrowser Quantum — веб-доступ к каталогам импорта/моды/миры;
-- FindMyDevice Server (Nulide) — собственный сервер для Android-приложения FindMyDevice.
+- FindMyDevice Server (Nulide) — собственный сервер для Android-приложения FindMyDevice;
+- Caddy — реверс-прокси с автоматическим HTTPS (Let's Encrypt) для веб-сервисов.
 
 Все сервисы поднимаются как Docker-контейнеры через единый `docker-compose.yml` в `/opt/stack`.
 
@@ -33,6 +34,7 @@
 30-install-filebrowser.sh
 20-install-terraria.sh
 40-install-findmydevice.sh
+50-install-caddy-proxy.sh   (после filebrowser и findmydevice — публикует их по HTTPS)
 99-status.sh            (в любой момент, чтобы посмотреть статус)
 ```
 
@@ -50,6 +52,7 @@ sudo reboot
 ./home-server/scripts/30-install-filebrowser.sh
 ./home-server/scripts/20-install-terraria.sh
 ./home-server/scripts/40-install-findmydevice.sh
+./home-server/scripts/50-install-caddy-proxy.sh
 ```
 
 ---
@@ -58,11 +61,45 @@ sudo reboot
 
 | Сервис         | Порт хоста | Протокол | Назначение                                |
 |----------------|-----------:|----------|--------------------------------------------|
+| Caddy          | 80, 443    | HTTP/HTTPS | Реверс-прокси с Let's Encrypt для веб-сервисов |
 | Crafty панель  | 8443       | HTTPS    | Веб-панель Crafty (самоподписанный TLS)   |
 | Minecraft      | 25565–25567| TCP      | Игровые слоты, проброшенные в Crafty      |
 | Terraria       | 7777       | TCP      | tModLoader 1.4 сервер                      |
-| FileBrowser    | 8080       | **HTTP** | Веб-доступ к импорту/мирам/модам           |
-| FindMyDevice   | 8090       | **HTTP** | По умолчанию; внутри контейнера — 8080    |
+| FileBrowser    | 8080       | **HTTP** | Локально/прямой доступ; публично — через Caddy |
+| FindMyDevice   | 8090       | **HTTP** | Локально/прямой доступ; публично — через Caddy |
+
+### Публичные URL через Caddy
+
+После запуска `50-install-caddy-proxy.sh`:
+
+| Публичный URL                                | Куда проксируется   |
+|----------------------------------------------|---------------------|
+| `https://files.server34.netcraze.club`       | `filebrowser:80`    |
+| `https://fmd.server34.netcraze.club`         | `findmydevice:8080` |
+
+### Проброс портов на роутере (Keenetic)
+
+- **Пробросить наружу:** `80/tcp` и `443/tcp` → IP домашнего сервера (нужно для Caddy и Let's Encrypt).
+- **Оставить как есть:** Minecraft `25565/tcp`, Terraria `7777/tcp`, Crafty `8443/tcp`.
+- **WebDAV** на роутере сейчас вынесен на внешний порт `5083` — это отдельный сервис, через
+  Caddy не публикуется. Если потребуется, в будущем можно добавить блок
+  `webdav.server34.netcraze.club` в `Caddyfile`, но только когда соответствующий апстрим
+  появится в `docker-compose.yml`.
+- Лучшая будущая практика: всё, что веб, отдавать наружу только через Caddy на 443,
+  а прямые порты приложений (`8080`, `8090` и т.п.) во внешний интернет не пробрасывать.
+
+### DNS
+
+Перед запуском Caddy убедитесь, что поддомены резолвятся в ваш домашний внешний IP
+(или в основной домен, который туда указывает):
+
+```bash
+nslookup fmd.server34.netcraze.club
+nslookup files.server34.netcraze.club
+```
+
+Если записей нет — заведите у DNS-провайдера CNAME на основной домен
+(`server34.netcraze.club`) или A-записи прямо на внешний IP.
 
 ---
 
@@ -78,6 +115,10 @@ sudo reboot
   Браузер ругается → Advanced → Proceed.
 - Никаких секретов в репозиторий не коммитим: всё, что чувствительное,
   лежит в `/opt/stack/.env` на сервере.
+- **После того как Caddy заработал** (`https://files...` и `https://fmd...` отдаются с
+  валидным сертификатом), на роутере **уберите WAN-форварды на 8080 и 8090** —
+  публиковать их прямо в интернет больше не нужно. Оставьте проброс только
+  `80/443` → Caddy. Локально (из дома / по VPN) `8080` и `8090` остаются доступны.
 
 ---
 
@@ -93,8 +134,12 @@ sudo reboot
 │   ├── data/  backups/  mods-inbox/
 ├── filebrowser/
 │   └── data/                 # БД и config.yml FileBrowser
-└── findmydevice/
-    └── data/                 # objectbox-БД FMD
+├── findmydevice/
+│   └── data/                 # objectbox-БД FMD
+└── caddy/
+    ├── Caddyfile             # конфиг реверс-прокси
+    ├── data/                 # сертификаты Let's Encrypt и состояние ACME
+    └── config/               # рабочая конфигурация Caddy
 ```
 
 ---
@@ -108,6 +153,7 @@ docker logs --tail=100 crafty
 docker logs --tail=100 terraria
 docker logs --tail=100 filebrowser
 docker logs --tail=100 findmydevice
+docker logs --tail=100 caddy
 ```
 
 Или просто:
