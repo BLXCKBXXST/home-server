@@ -196,6 +196,28 @@ Forge 1.20.1 требует **Java 17**. В настройках сервера 
 ```
 (внутри контейнера Crafty Java 17 уже доступна).
 
+### Caddy / FMD отдают 502 или приложение пишет «Ошибка: null»
+
+Запустите единый диагностический скрипт — он проверит DNS, контейнеры, Caddyfile,
+сетевую связность Caddy ↔ findmydevice, локальные порты и соберёт логи в один файл:
+
+```bash
+./home-server/scripts/60-diagnose-caddy-fmd.sh
+```
+
+Можно переопределить домены и порт:
+
+```bash
+FMD_DOMAIN=fmd.example.com \
+FILES_DOMAIN=files.example.com \
+FMD_HOST_PORT=8090 \
+    ./home-server/scripts/60-diagnose-caddy-fmd.sh
+```
+
+Скрипт ничего не меняет, только читает. В конце печатает короткое резюме и сохраняет
+полный лог в `/tmp/caddy-fmd-diagnose-YYYYmmdd-HHMMSS.log` — этот файл можно прислать
+целиком, чтобы быстрее разобрать причину.
+
 ### FindMyDevice: «не подключается из приложения»
 - В Android FMD укажите Server URL **с протоколом**: `http://LAN_IP:8090` (или ваш `https://домен`).
 - Если выставлено наружу — обязательно через реверс-прокси с HTTPS, иначе многие
