@@ -240,16 +240,20 @@ menu_tips() {
   (в настройках сервера в Crafty)
 
   ── FMD Android ────────────────────────────────
-  # Обязательно: для авто-включения геолокации (WRITE_SECURE_SETTINGS)
+  # Базовые разрешения (через ADB, однократно при подключенном телефоне)
+  adb shell pm grant de.nulide.findmydevice android.permission.READ_PHONE_STATE
+  adb shell pm grant de.nulide.findmydevice android.permission.ACCESS_FINE_LOCATION
+  adb shell pm grant de.nulide.findmydevice android.permission.ACCESS_BACKGROUND_LOCATION
+  adb shell pm grant de.nulide.findmydevice android.permission.READ_CONTACTS
+  adb shell pm grant de.nulide.findmydevice android.permission.SEND_SMS
+  adb shell pm grant de.nulide.findmydevice android.permission.RECEIVE_SMS
+
+  # Для блокировки экрана (режим пропавшего устройства)
   adb shell pm grant de.nulide.findmydevice \
     android.permission.WRITE_SECURE_SETTINGS
 
-  # Рекомендуемые обычные разрешения (через UI телефона):
-  # - Геолокация (в том числе "всегда")
-  # - SMS (для команд по SMS)
-  # - Доступ к контактам (если нужны имена в SMS)
-  # - Разрешить работу в фоне / игнорировать оптимизацию батареи
-  # - Разрешить "Администратор устройства" для блокировки экрана
+  # Для автозапуска после перезагрузки
+  adb shell pm grant de.nulide.findmydevice android.permission.RECEIVE_BOOT_COMPLETED
 TIPS
     pause
 }
