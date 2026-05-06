@@ -239,6 +239,15 @@ menu_tips() {
   Java: /usr/lib/jvm/java-17-openjdk-amd64/bin/java
   (в настройках сервера в Crafty)
 
+  ── ADB базовое ───────────────────────────────────
+  adb devices -l                         # список устройств
+  adb shell                              # shell на устройстве
+  adb reboot                             # перезагрузка
+  adb tcpip 5555                         # перевести adb в TCP на порту 5555
+  adb connect 192.168.1.10:5555          # подключиться по сети (замени IP)
+  adb install app.apk                    # установка APK
+  adb logcat                             # поток логов
+
   ── FMD Android ────────────────────────────────
   # Базовые разрешения (через ADB, однократно при подключенном телефоне)
   adb shell pm grant de.nulide.findmydevice android.permission.READ_PHONE_STATE
@@ -249,8 +258,7 @@ menu_tips() {
   adb shell pm grant de.nulide.findmydevice android.permission.RECEIVE_SMS
 
   # Для блокировки экрана (режим пропавшего устройства)
-  adb shell pm grant de.nulide.findmydevice \
-    android.permission.WRITE_SECURE_SETTINGS
+  adb shell pm grant de.nulide.findmydevice android.permission.WRITE_SECURE_SETTINGS
 
   # Для автозапуска после перезагрузки
   adb shell pm grant de.nulide.findmydevice android.permission.RECEIVE_BOOT_COMPLETED
