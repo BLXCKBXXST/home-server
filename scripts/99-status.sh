@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# 99-status.sh — интерактивное TUI-меню для домашнего стека.
+# 99-status.sh — интерактивное TUI-меню и статус домашнего стека /opt/stack.
 # Без внешних зависимостей (dialog/whiptail не нужны).
-# Запуск: bash 99-status.sh  ——  или bash 99-status.sh --status для неинтерактивного режима.
+# Запуск: bash 99-status.sh | --status | --install (поставить командой `hs`).
 set -uo pipefail
 
 STACK_DIR="/opt/stack"
 CADDYFILE="${STACK_DIR}/caddy/Caddyfile"
-SVCS=(caddy filebrowser findmydevice crafty terraria)
+SVCS=()  # docker-сервисы стека; заполняется discover_svcs()
 
 # Цвета
 RED='\033[0;31m';  GREEN='\033[0;32m';  YELLOW='\033[1;33m'
@@ -20,15 +20,26 @@ hdr()     { echo -e "${BOLD}${BLUE}$*${NC}"; }
 
 pause() { echo; read -r -p $'  \033[1m[Enter] вернуться в меню...\033[0m' _; }
 
+# Определяет список docker-сервисов стека (один раз за запуск).
+discover_svcs() {
+    [[ "${#SVCS[@]}" -gt 0 ]] && return
+    local raw
+    raw="$( (cd "${STACK_DIR}" 2>/dev/null && docker compose config --services 2>/dev/null) | sort )"
+    [[ -z "${raw}" ]] && raw="$(docker ps -a --format '{{.Names}}' 2>/dev/null | sort)"
+    while IFS= read -r s; do
+        [[ -n "${s}" ]] && SVCS+=("${s}")
+    done <<< "${raw}"
+}
+
 # ---------------------------------------------------------------------------
 # Блок статуса
 # ---------------------------------------------------------------------------
 
 show_status() {
-    clear
+    clear 2>/dev/null || true
     echo -e "${BOLD}${CYAN}"
     echo "  ┌──────────────────────────────────────────────────┐"
-    echo "  │        Home Server Status                │"
+    echo "  │                Home Server Status                │"
     echo "  └──────────────────────────────────────────────────┘"
     echo -e "${NC}"
 
@@ -42,8 +53,8 @@ show_status() {
         echo "  RAM:    ${MU} MB / ${MTM} MB ($(( (MT-MA)*100/MT ))%)"
     fi
     if command -v df >/dev/null 2>&1; then
-        read -r _ DT DU _ DP _ < <(df -h "${STACK_DIR}" 2>/dev/null | tail -1)
-        echo    "  Disk:   ${DU} / ${DT} (${DP})  — ${STACK_DIR}"
+        read -r _ DT DU _ DP _ < <(df -h / 2>/dev/null | tail -1)
+        echo    "  Disk:   ${DU} / ${DT} (${DP})  —  /"
     fi
 
     section "Сеть"
@@ -72,6 +83,26 @@ show_status() {
             printf "  %-18s ${YELLOW}%-12s${NC}\n" "${SVC}" "not found"
         fi
     done
+
+    section "Системные сервисы (systemd --user)"
+    export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    WEB_ACT="$(systemctl --user is-active sibsutis-schedule-web.service 2>/dev/null || echo inactive)"
+    WEB_ENA="$(systemctl --user is-enabled sibsutis-schedule-web.service 2>/dev/null || echo '?')"
+    if [[ "${WEB_ACT}" == "active" ]]; then
+        ok   "sibsutis-schedule-web — ${WEB_ACT} (${WEB_ENA})"
+    else
+        fail "sibsutis-schedule-web — ${WEB_ACT} (${WEB_ENA})"
+    fi
+    WEBPORT="$(grep -oE '^[[:space:]]*web_listen_addr[[:space:]]*=.*' \
+        "${HOME}/.config/sibsutis-schedule/config.txt" 2>/dev/null | grep -oE '[0-9]+' | tail -1)"
+    WEBPORT="${WEBPORT:-8080}"
+    if command -v curl >/dev/null 2>&1; then
+        HZ="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+            "http://localhost:${WEBPORT}/healthz" 2>/dev/null || echo 000)"
+        if [[ "${HZ}" == "200" ]]; then ok   "healthz :${WEBPORT} → 200"
+        else                            warn "healthz :${WEBPORT} → ${HZ}"
+        fi
+    fi
 
     section "HTTPS URL (Caddy)"
     CADDY_DOMAINS=()
@@ -102,29 +133,50 @@ show_status() {
         warn "curl не установлен"
     fi
 
-    section "Локальные порты"
+    section "Локальные порты (LISTEN)"
     if command -v ss >/dev/null 2>&1; then
-        LP="$(ss -lntp 2>/dev/null | grep -oE ':[0-9]+' | tr -d ':' | sort -un)"
-        declare -A PL=([80]="Caddy HTTP" [443]="Caddy HTTPS" [8080]="FileBrowser" [8090]="FMD" [8443]="Crafty" [7777]="Terraria" [25565]="Minecraft" [5083]="WebDAV")
-        for P in 80 443 8080 8090 8443 7777 25565 5083; do
-            if echo "${LP}" | grep -qx "${P}"; then ok  "${P}/tcp — ${PL[${P}]}"
-            else                                    warn "${P}/tcp — ${PL[${P}]} (не слушается)"
-            fi
+        # карта host-порт → контейнер из docker ps (опубликованные порты)
+        declare -A PORTMAP=()
+        while read -r NM PORTS; do
+            [[ -z "${NM:-}" ]] && continue
+            # значения — только цифры портов, словоделение безопасно
+            # shellcheck disable=SC2013
+            for HP in $(grep -oE ':[0-9]+->' <<<"${PORTS}" | grep -oE '[0-9]+' | sort -u); do
+                PORTMAP[${HP}]="${NM}"
+            done
+        done < <(docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null)
+        [[ -n "${WEBPORT:-}" ]] && PORTMAP[${WEBPORT}]="sibsutis-schedule-web"
+        ss -lntH 2>/dev/null | awk '{ n = split($4, a, ":"); print a[n] }' | sort -un | while read -r P; do
+            echo "  ${P}/tcp — ${PORTMAP[${P}]:-—}"
         done
+    else
+        warn "ss не установлен"
     fi
 
     section "Caddy сертификаты"
-    CD="${STACK_DIR}/caddy/data/caddy/certificates"
-    if [[ -d "${CD}" ]]; then
-        CNT="$(find "${CD}" -name '*.crt' 2>/dev/null | wc -l)"
-        ok "${CNT} сертификатов:"
-        find "${CD}" -name '*.crt' 2>/dev/null | while read -r CRT; do
-            DN="$(basename "$(dirname "${CRT}")")" 
-            EX="$(openssl x509 -enddate -noout -in "${CRT}" 2>/dev/null | cut -d= -f2 || echo '?')"
-            echo "    ${DN}  → до ${EX}"
-        done
+    # Каталог caddy/data принадлежит root внутри контейнера — читаем сертификаты
+    # через сам контейнер caddy (docker доступен без sudo).
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx caddy; then
+        CRTS="$(docker exec caddy sh -c 'find /data/caddy/certificates -name "*.crt" 2>/dev/null' 2>/dev/null | sort)"
+        if [[ -z "${CRTS}" ]]; then
+            warn "сертификаты не найдены (Caddy ещё ничего не выпускал?)"
+        else
+            ok "$(printf '%s\n' "${CRTS}" | wc -l) сертификатов:"
+            printf '%s\n' "${CRTS}" | while read -r CRT; do
+                [[ -z "${CRT}" ]] && continue
+                DN="$(basename "${CRT}" .crt)"
+                PEM="$(docker exec caddy cat "${CRT}" 2>/dev/null)"
+                EX="$(openssl x509 -enddate -noout 2>/dev/null <<<"${PEM}" | cut -d= -f2)"
+                [[ -z "${EX}" ]] && EX='?'
+                if openssl x509 -checkend $(( 30 * 86400 )) -noout >/dev/null 2>&1 <<<"${PEM}"; then
+                    echo -e "    ${GREEN}●${NC} ${DN}  → до ${EX}"
+                else
+                    echo -e "    ${YELLOW}●${NC} ${DN}  → до ${EX}  ${YELLOW}(истекает < 30 дней!)${NC}"
+                fi
+            done
+        fi
     else
-        warn "Директория ${CD} не найдена"
+        warn "контейнер caddy не запущен — сертификаты недоступны"
     fi
     echo
 }
@@ -292,7 +344,7 @@ main_menu() {
         clear
         echo -e "${BOLD}${CYAN}"
         echo "  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-        echo "  ┃    🐺  Home Server Manager                 ┃"
+        echo "  ┃    🐺  Home Server Manager                     ┃"
         echo "  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
         echo -e "${NC}"
         echo -e "    ${BOLD}1${NC}) 📊  Полный статус стека"
@@ -317,9 +369,59 @@ main_menu() {
     done
 }
 
-# Неинтерактивный режим: bash 99-status.sh --status
-if [[ "${1:-}" == "--status" || "${1:-}" == "-s" ]]; then
-    show_status; exit 0
-fi
+# ---------------------------------------------------------------------------
+# Установка как команда `hs`
+# ---------------------------------------------------------------------------
 
-main_menu
+do_install() {
+    local self dest
+    self="$(realpath "${BASH_SOURCE[0]}")"
+    dest="${HOME}/.local/bin/hs"
+    mkdir -p "${HOME}/.local/bin"
+    install -m 755 "${self}" "${dest}"
+    ok "Установлено: ${dest}"
+    # Проверяем PATH именно login-шелла: он сорсит ~/.profile, где Debian
+    # добавляет ~/.local/bin (если каталог существует — а он уже создан выше).
+    if bash -lc 'case ":${PATH}:" in *":${HOME}/.local/bin:"*) exit 0 ;; *) exit 1 ;; esac' 2>/dev/null; then
+        ok "Запускай командой: hs  (в текущей сессии может понадобиться: source ~/.profile)"
+    else
+        warn "${HOME}/.local/bin не подхватывается в PATH. Добавь в ${HOME}/.profile строку:"
+        # shellcheck disable=SC2016
+        echo '      export PATH="$HOME/.local/bin:$PATH"'
+        echo "      и перелогинься."
+    fi
+}
+
+do_uninstall() {
+    if [[ -e "${HOME}/.local/bin/hs" ]]; then
+        rm -f "${HOME}/.local/bin/hs" && ok "Удалено: ${HOME}/.local/bin/hs"
+    else
+        warn "${HOME}/.local/bin/hs не найдена — нечего удалять"
+    fi
+}
+
+show_help() {
+    cat <<'HELP'
+hs — статус и управление домашним сервером (стек /opt/stack)
+
+Использование:
+  hs               интерактивное TUI-меню
+  hs --status, -s  напечатать полный статус и выйти
+  hs --install     установить себя командой ~/.local/bin/hs
+  hs --uninstall   удалить команду ~/.local/bin/hs
+  hs --help, -h    эта справка
+HELP
+}
+
+# ---------------------------------------------------------------------------
+# Точка входа
+# ---------------------------------------------------------------------------
+
+case "${1:-}" in
+    --install)    do_install ;;
+    --uninstall)  do_uninstall ;;
+    --help|-h)    show_help ;;
+    --status|-s)  discover_svcs; show_status ;;
+    "")           discover_svcs; main_menu ;;
+    *)            echo "Неизвестный аргумент: ${1} (см. --help)" >&2; exit 1 ;;
+esac

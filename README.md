@@ -156,10 +156,20 @@ docker logs --tail=100 findmydevice
 docker logs --tail=100 caddy
 ```
 
-Или просто:
+Или интерактивная панель `99-status.sh` — статус стека (контейнеры, systemd-сервисы,
+порты, сертификаты) и меню рестарт/логи/обновление контейнеров:
 
 ```bash
-./home-server/scripts/99-status.sh
+./home-server/scripts/99-status.sh            # разовый запуск
+./home-server/scripts/99-status.sh --install  # поставить командой `hs`
+```
+
+После `--install` панель вызывается из любого каталога:
+
+```bash
+hs            # интерактивное меню
+hs --status   # печать полного статуса
+hs --uninstall  # убрать команду
 ```
 
 ---
